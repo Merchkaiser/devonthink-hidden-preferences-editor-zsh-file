@@ -1,0 +1,913 @@
+#!/bin/zsh
+# DEVONthink Curated Preferences Editor (V4)
+# Purpose: macOS GUI for editing selected DEVONthink preferences, including advanced/hidden keys.
+# Features: categorized search, toggles, choices, numeric ranges, text, paths, fonts, and colors.
+# Implementation: zsh creates a temporary Swift/AppKit application and runs it with xcrun swift.
+# Requirements: macOS, DEVONthink, and Apple Swift toolchain (xcrun swift).
+# Usage: chmod +x DEVONthink_Curated_Preferences_Editor.zsh && ./DEVONthink_Curated_Preferences_Editor.zsh
+# Warning: Changes write to DEVONthink preferences; back up settings and quit DEVONthink first.
+# Configuration: edit the three YES/NO variables below before launching.
+# Note: Unofficial community utility; not affiliated with DEVONtechnologies.
+# Curated DEVONthink preferences control panel V4: only understood settings; defined toggles, choices, ranges, source pickers, multiline editors, and native color pickers.
+
+# ================================================================================================================
+
+DO_YOU_WANT_ERROR_POPUPS__YES_NO="YES"
+MINIMIZE_LAUNCHING_TERMINAL__YES_NO="YES"
+RELAUNCH_DEVONTHINK_AFTER_EDITOR_CLOSES__YES_NO="NO"
+
+TMP_DIR="$(mktemp -d -t devonthink_curated_preferences)"
+TMP_SWIFT="$TMP_DIR/DEVONthinkCuratedPreferences.swift"
+TMP_ERROR="$TMP_DIR/error.txt"
+
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT INT TERM
+
+popup_error() {
+    [[ "$DO_YOU_WANT_ERROR_POPUPS__YES_NO" == "YES" ]] || return 0
+    /usr/bin/osascript -e 'on run argv' -e 'display alert "DEVONthink Preferences" message (item 1 of argv) as critical' -e 'end run' "$1" >/dev/null 2>&1 || true
+}
+
+if [[ "$MINIMIZE_LAUNCHING_TERMINAL__YES_NO" == "YES" && "$TERM_PROGRAM" == "Apple_Terminal" ]]; then
+    /usr/bin/osascript -e 'tell application "Terminal" to try' -e 'set miniaturized of front window to true' -e 'end try' >/dev/null 2>&1 || true
+fi
+
+command -v xcrun >/dev/null 2>&1 || { popup_error "xcrun was not found."; exit 1; }
+xcrun --find swift >/dev/null 2>&1 || { popup_error "Swift was not found. Apple Command Line Tools are required for this GUI script."; exit 1; }
+
+export DEVON_RELAUNCH_AFTER_CLOSE="$RELAUNCH_DEVONTHINK_AFTER_EDITOR_CLOSES__YES_NO"
+
+cat > "$TMP_SWIFT" <<'SWIFT'
+import AppKit
+import CoreFoundation
+import Foundation
+
+let thinkDomain = "com.devon-technologies.think"
+let appBundleID = "com.devon-technologies.think"
+
+enum PrefValue: Equatable {
+    case bool(Bool)
+    case int(Int)
+    case double(Double)
+    case string(String)
+}
+
+struct Choice { let label: String; let value: PrefValue }
+
+enum EditorKind {
+    case boolean
+    case choice([Choice])
+    case intRange(min: Int, max: Int, step: Int, unit: String)
+    case doubleRange(min: Double, max: Double, step: Double, unit: String)
+    case text
+    case multilineText
+    case color
+    case path
+    case font
+    case extensions
+    case encoding
+    case nsEncoding
+}
+
+struct PreferenceSpec {
+    let category: String
+    let domain: String
+    let key: String
+    let aliases: [String]
+    let title: String
+    let help: String
+    let source: String
+    let editor: EditorKind
+
+    static func bool(category: String, domain: String, key: String, aliases: [String] = [], title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: aliases, title: title, help: help, source: source, editor: .boolean)
+    }
+    static func choice(category: String, domain: String, key: String, title: String, help: String, source: String, choices: [Choice]) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .choice(choices))
+    }
+    static func intRange(category: String, domain: String, key: String, title: String, help: String, source: String, min: Int, max: Int, step: Int, unit: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .intRange(min: min, max: max, step: step, unit: unit))
+    }
+    static func doubleRange(category: String, domain: String, key: String, title: String, help: String, source: String, min: Double, max: Double, step: Double, unit: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .doubleRange(min: min, max: max, step: step, unit: unit))
+    }
+    static func text(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .text)
+    }
+    static func multilineText(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .multilineText)
+    }
+    static func color(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .color)
+    }
+    static func path(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .path)
+    }
+    static func font(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .font)
+    }
+    static func extensions(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .extensions)
+    }
+    static func encoding(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .encoding)
+    }
+    static func nsEncoding(category: String, domain: String, key: String, title: String, help: String, source: String) -> PreferenceSpec {
+        PreferenceSpec(category: category, domain: domain, key: key, aliases: [], title: title, help: help, source: source, editor: .nsEncoding)
+    }
+}
+
+let allSpecs: [PreferenceSpec] = [
+    .bool(category: "General & Interface", domain: thinkDomain, key: "AlternativeEmailView", aliases: [], title: "Use alternative email view", help: "Use DEVONthink’s alternative presentation for email messages.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "AlwaysOpenExternally", aliases: [], title: "Always open documents externally", help: "Open documents in their external/default application instead of DEVONthink’s internal viewer when applicable.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "AutoReveal", aliases: [], title: "Automatically reveal items", help: "Automatically reveal the currently previewed item in the item list after navigation or following item links.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "AutomaticCloudDownload", aliases: [], title: "Automatically download cloud files", help: "Automatically download cloud-backed files when DEVONthink needs them.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "ColorizeInstancesPrefs", aliases: [], title: "Mark duplicates and replicants in color", help: "Colorize duplicate/replicant instances in DEVONthink views.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "CreatePreviewAsIcon", aliases: [], title: "Create preview as icon", help: "Use a generated preview as the item icon where DEVONthink supports it.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DarkDokumentsStyleEnabled", aliases: [], title: "Use dark background for documents", help: "Use DEVONthink’s dark document appearance when appropriate.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DataDetectorsPref", aliases: [], title: "Data detectors", help: "Detect things such as dates, addresses, and phone numbers in editable text.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DetailedColumnsView", aliases: [], title: "Detailed columns view", help: "Show the detailed variant of Columns view.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DetailedIconView", aliases: [], title: "Detailed icon view", help: "Show extra information in Icon view.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DisplaySuffix", aliases: [], title: "Show filename extensions", help: "Show filename extensions/suffixes in DEVONthink item names where supported.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DocumentWindowsPreferFullscreen", aliases: [], title: "Prefer full screen for document windows", help: "Prefer opening standalone document windows in full-screen mode.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DontAskBeforeDeletingBatchProcessingRules", aliases: [], title: "Do not confirm deleting batch-processing rules", help: "Skip DEVONthink’s confirmation before deleting batch-processing rules.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DontAskBeforeDeletingExternalItems", aliases: [], title: "Do not confirm deleting external/indexed items", help: "Skip DEVONthink’s confirmation before deleting items that affect external/indexed files.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DontAskBeforeDeletingSmartItems", aliases: [], title: "Do not confirm deleting smart items", help: "Skip DEVONthink’s confirmation before deleting smart groups or related smart items.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DontAskForSpotlight", aliases: [], title: "Do not ask about Spotlight", help: "Suppress DEVONthink prompts related to creating or using Spotlight indexes.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DontShowLog", aliases: [], title: "Do not automatically show Log window", help: "Keep DEVONthink from automatically presenting the Log window.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "ShowAllFeatures", aliases: [], title: "Show features of higher editions", help: "Show features that belong to higher DEVONthink editions in the interface.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "ShowSupportAssistant", aliases: [], title: "Show Support Assistant", help: "Expose DEVONthink’s Support Assistant interface.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "ShowTabsAlways", aliases: [], title: "Always show tab bar", help: "Keep the tab bar visible even when only one tab is open.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "SidebarKeyboardSupport", aliases: [], title: "Sidebar keyboard navigation", help: "Enable additional keyboard support for navigating the sidebar.", source: "Advanced setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "SidebarReverse", aliases: [], title: "Reverse sidebar order", help: "Reverse the ordering used by the relevant sidebar list.", source: "Advanced setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "StripesPref", aliases: [], title: "Alternating row colors", help: "Use alternating row backgrounds in list-style views.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "TypewriterScrolling", aliases: [], title: "Typewriter-like scrolling", help: "Keep the current editing line around a stable vertical position while typing.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "playSoundAfterCapture", aliases: [], title: "Play sound after capture", help: "Play a confirmation sound after Unified Capture finishes a capture.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "sorterFullVisibility", aliases: [], title: "Sorter full visibility", help: "Show the docked Sorter at full rather than reduced visibility.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DisableUnifiedDatabases", aliases: [], title: "Disable unified databases", help: "Turn off the unified Databases section and keep databases presented separately.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DisableUnifiedInbox", aliases: [], title: "Disable unified inboxes", help: "Turn off unified inbox presentation.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "DisableUnifiedTags", aliases: [], title: "Disable unified tags", help: "Turn off unified tag presentation across databases.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "ShowAnnotationPanelAutomatically", aliases: [], title: "Show annotation panel automatically", help: "Automatically present the annotation panel when DEVONthink considers it useful.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "ExpandSidebar", aliases: [], title: "Automatically expand & collapse sidebar groups", help: "Automatically select and expand the relevant group in the Navigate sidebar when revealing or opening it.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "RetainView", aliases: [], title: "Retain current view settings", help: "Keep the current main window’s view settings when switching between groups or databases instead of adopting each location’s stored view.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "SelectSearchInspector", aliases: [], title: "Automatically select Search inspector", help: "Switch to the Search inspector when starting a toolbar search while the view/edit pane and inspectors are visible.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "UseTabs", aliases: [], title: "Enable tabbed browsing", help: "Allow Command-clicked links in web, PDF, and text views to open in a new DEVONthink tab.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "Alarms", aliases: [], title: "Enable reminder alarms", help: "Enable DEVONthink reminder alarms on this Mac.", source: "Normal setting"),
+    .bool(category: "General & Interface", domain: thinkDomain, key: "MarkAsRead", aliases: [], title: "Automatically mark viewed items as read", help: "Mark items as read automatically when they are previewed/viewed.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "SelectNotes", aliases: [], title: "Select and display new notes automatically", help: "Automatically select and display the last note created from external capture/import sources.", source: "Normal setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "DisplayGroupsInPreviewPane", aliases: [], title: "Display group contents in preview pane", help: "Display the contents of selected groups, smart groups, and feeds in the view/edit pane instead of limiting preview to files.", source: "Legacy hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "DisableAutomaticDeconsolidation", aliases: [], title: "Disable automatic deconsolidation", help: "Prevent items added to indexed groups from being moved out into the indexed Finder folder.", source: "Legacy hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "EnableAutomaticConsolidation", aliases: [], title: "Automatically consolidate indexed items", help: "When indexed items are moved to a non-indexed database location, move them from Finder into the database as imported items.", source: "Legacy hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "DisableAutomaticUpdatingOfIndexedItems", aliases: [], title: "Disable automatic updating of indexed items", help: "Stop DEVONthink automatically refreshing indexed items after their external files change.", source: "Official hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "DisableFileSystemEvents", aliases: ["DisableFilesystemEvents"], title: "Disable filesystem-event monitoring", help: "Stop DEVONthink listening to filesystem events used to notice external changes. The DEVONthink 4.4 binary also contains an alternate spelling; this control writes both forms.", source: "Official hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "DisableFileCoordination", aliases: [], title: "Disable macOS file coordination", help: "Stop DEVONthink participating in macOS file coordination for files. This can avoid delays from unresponsive coordinating processes.", source: "Official hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "DisableFinderTags", aliases: [], title: "Disable Finder-tag exchange", help: "Globally stop importing Finder tags into DEVONthink and exporting DEVONthink tags to Finder.", source: "Legacy hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "DisableStrictFilenames", aliases: [], title: "Disable more-compatible filename rules", help: "Disable DEVONthink’s more-compatible filename substitutions; macOS-reserved slash/colon handling can still apply.", source: "Advanced setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "EnableApplicationFiles", aliases: [], title: "Allow application files", help: "Allow macOS application bundles to be imported or indexed.", source: "Official hidden setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "CopyImagesIntoDatabase", aliases: [], title: "Import pasted images into database", help: "When supported, import pasted/dropped images into the database instead of leaving only external references.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "ImportAttachments", aliases: [], title: "Import attachments", help: "Import attachments when DEVONthink processes supported source documents/messages.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "ImportFinderTags", aliases: [], title: "Import Finder tags", help: "Import Finder tags as DEVONthink tags during supported imports/indexing.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "ExportFinderTags", aliases: [], title: "Export Finder tags", help: "Write DEVONthink tags back as Finder tags for supported external/indexed files.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "NewDatabaseCreateSpotlightIndex", aliases: [], title: "Create Spotlight index for new databases", help: "Create a macOS Spotlight index when making a new DEVONthink database.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "StrictDuplicateRecognition", aliases: [], title: "Stricter duplicate recognition", help: "Use stricter criteria when DEVONthink decides whether items are duplicates.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "Versioning", aliases: [], title: "Document versioning", help: "Enable DEVONthink’s document versioning behavior.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "Automatic Locking", aliases: [], title: "Automatic locking", help: "Automatically lock protected/secure DEVONthink data according to the application’s locking behavior.", source: "Normal setting"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "UseDocumentDates", aliases: [], title: "Use content creation/modification dates", help: "Prefer creation/modification dates found in document content/metadata when DEVONthink imports or processes files.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "AutomaticWikiLinks", aliases: [], title: "Automatic WikiLinks", help: "Automatically recognize/create WikiLink-style links while editing supported text.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "DisableWYSIWYGEditing", aliases: [], title: "Disable Markdown WYSIWYG editing", help: "Disable live WYSIWYG rendering of Markdown tables, images, links, and MathJax in the source editor.", source: "Advanced setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "MarkdownWYSIWYG", aliases: [], title: "Markdown WYSIWYG rendering", help: "Enable live rendering of Markdown tables, images, links, and equations in the source editor.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "ForceLineBreaks", aliases: [], title: "Force Markdown line breaks", help: "Render single line breaks as line breaks without requiring Markdown’s usual two trailing spaces.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "MathJAX", aliases: [], title: "Render MathJax equations", help: "Enable MathJax equation rendering in Markdown.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "Mermaid", aliases: [], title: "Render Mermaid diagrams", help: "Enable Mermaid diagram rendering in supported Markdown/web content.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "Prism", aliases: [], title: "Syntax-highlight code blocks", help: "Enable Prism-based syntax highlighting for supported code blocks.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "HighlightLinksPrefs", aliases: [], title: "Highlight links", help: "Visually highlight detected links in supported editors.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "CheckGrammarPref", aliases: [], title: "Check grammar with spelling", help: "Check grammar while DEVONthink performs spelling checks.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "CheckSpellingPref", aliases: [], title: "Enable spelling checking", help: "Enable spelling checking in supported editors.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "CheckSpellingAutomaticallyPref", aliases: [], title: "Check spelling while typing", help: "Check spelling automatically as you type.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "CheckSpellingInRichTextOnlyPref", aliases: [], title: "Check spelling only in rich text", help: "Limit automatic spelling/correction behavior to rich-text documents.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "SmartCopyPref", aliases: [], title: "Smart copy/paste", help: "Use macOS smart copy/paste behavior in supported text editors.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "SmartDashesPref", aliases: [], title: "Smart dashes", help: "Automatically substitute typographic dashes in supported editors.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "SmartLinksPref", aliases: [], title: "Smart links", help: "Automatically detect/create links in supported editors.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "SmartQuotesPref", aliases: [], title: "Smart quotes", help: "Automatically substitute typographic quotation marks.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "SmartQuotesAndDashesInRichTextOnlyPref", aliases: [], title: "Smart quotes/dashes only in rich text", help: "Limit smart quote and dash substitutions to rich-text documents.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "SmartMarkdownQuotesAndDashes", aliases: [], title: "Smart quotes/dashes in Markdown", help: "Apply smart quote and dash substitutions in Markdown editing where supported.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "TextReplacementPref", aliases: [], title: "Text replacement", help: "Use macOS text replacement substitutions while editing.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "UpdateItemLinkNamesAutomatically", aliases: [], title: "Update item-link names automatically", help: "When linked items are renamed, automatically update the displayed names of item links.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "UpdateSquareBracketWikiLinksAutomatically", aliases: [], title: "Update square-bracket WikiLinks automatically", help: "When linked items are renamed, automatically update WikiLink names written in double square brackets.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "WikiLinkNamesAndAliases", aliases: [], title: "WikiLinks match names and aliases", help: "Allow WikiLink resolution to use both item names and aliases.", source: "Normal setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "RawMarkdownPasting", aliases: [], title: "Paste raw text into Markdown", help: "Ignore rich clipboard formatting and paste raw plain text into Markdown documents.", source: "Official hidden setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "PlainTextIsMarkdown", aliases: [], title: "Treat plain text as Markdown", help: "Treat all plain-text files as Markdown for DEVONthink display/processing.", source: "Official hidden setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "IndexRawMarkdownSource", aliases: [], title: "Index raw Markdown source", help: "Index Markdown source code instead of only the rendered content.", source: "Official hidden setting"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "RichNotesWithoutAttachments", aliases: [], title: "Create RTF instead of RTFD from Services", help: "Make DEVONthink Services create RTF documents rather than RTFD packages containing attachments.", source: "Official hidden setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "AutoScalesPDF", aliases: [], title: "Automatically scale PDFs", help: "Automatically fit/scale PDF pages to the available view.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "DisablePDFDarkMode", aliases: [], title: "Disable PDF dark mode", help: "Prevent DEVONthink from applying its dark-mode appearance to PDF documents.", source: "Official hidden setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "DisablePDFValidation", aliases: [], title: "Disable PDF validation", help: "Skip DEVONthink’s validation of PDFs created by merging, conversion, or clipping.", source: "Official hidden setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "ForceEditablePDFs", aliases: [], title: "Force PDFs editable", help: "Open all PDFs as editable even when DEVONthink would normally use read-only mode due to PDFKit compatibility concerns.", source: "Official hidden setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "DisplayPDFinRTF", aliases: [], title: "Display PDF attachments in rich text", help: "Render attached PDFs inside rich-text documents rather than only as attachment icons.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "DisplaysAsBook", aliases: [], title: "Display PDFs as a book", help: "Use book-style first-page handling for supported two-page PDF display modes.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "DisplaysPageBreaks", aliases: [], title: "Display PDF page breaks", help: "Show visual gaps/page breaks between PDF pages.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "ShouldScaleAttachedImages", aliases: [], title: "Scale attached images", help: "Scale oversized images embedded in rich text/notes for more practical on-screen display.", source: "Hidden/advanced setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "QLEnableTextSelection", aliases: [], title: "Quick Look text selection", help: "Allow text selection in Quick Look-style previews where supported.", source: "Advanced setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "QuickTimeLoopPref", aliases: [], title: "Loop audio/video playback", help: "Loop supported audio/video playback.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "QuickTimePlayPref", aliases: [], title: "Automatically play audio/video", help: "Automatically start playback when supported audio/video is opened.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "AVDesktopPlaybackControlsControllerShowsDurationInsteadOfTimeRemainingDefaultsKey", aliases: [], title: "Show media duration instead of remaining time", help: "Show total media duration in playback controls instead of the remaining-time countdown.", source: "Advanced macOS media setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "PDFThumbsPref", aliases: [], title: "Create PDF thumbnails", help: "Generate thumbnails for PDF documents.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "ImageThumbsPref", aliases: [], title: "Create image thumbnails", help: "Generate thumbnails for image documents.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "QuickTimeThumbsPref", aliases: [], title: "Create audio/video thumbnails", help: "Generate thumbnails/previews for supported audio/video files.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "FormattedNoteThumbsPref", aliases: [], title: "Create formatted-note thumbnails", help: "Generate thumbnails for formatted notes.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "MarkdownThumbsPref", aliases: [], title: "Create Markdown thumbnails", help: "Generate thumbnails for Markdown documents.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "BookmarkThumbsPref", aliases: [], title: "Create bookmark thumbnails", help: "Generate thumbnails for bookmarks/web links.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "WebArchiveThumbsPref", aliases: [], title: "Create WebArchive thumbnails", help: "Generate thumbnails for WebArchive documents.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "OtherThumbsPref", aliases: [], title: "Create thumbnails for other file types", help: "Generate thumbnails for other supported file types.", source: "Normal setting"),
+    .bool(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "TranscriptionTimestamps", aliases: [], title: "Add transcription timestamps", help: "Include timestamps in audio/video transcription output.", source: "Normal setting"),
+    .bool(category: "OCR & Recognition", domain: thinkDomain, key: "OCRPlugin.AutoCorrectSkew", aliases: [], title: "OCR: correct skew", help: "Correct page skew during OCR.", source: "Normal OCR setting"),
+    .bool(category: "OCR & Recognition", domain: thinkDomain, key: "OCRPlugin.AutoRotate", aliases: [], title: "OCR: automatically rotate pages", help: "Automatically detect and correct page orientation during OCR.", source: "Normal OCR setting"),
+    .bool(category: "OCR & Recognition", domain: thinkDomain, key: "OCRPlugin.CompressPDF", aliases: [], title: "OCR: compress resulting PDF", help: "Compress the final searchable PDF generated by OCR.", source: "Normal OCR setting"),
+    .bool(category: "OCR & Recognition", domain: thinkDomain, key: "OCRUploads", aliases: [], title: "Allow OCR uploads", help: "Allow the configured OCR workflow to upload/process material remotely when that OCR mode requires it.", source: "Advanced OCR setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "SearchLive", aliases: [], title: "Live search while typing", help: "Update search results while the search query is being typed.", source: "Normal setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "SearchPrefix", aliases: [], title: "Partial matches while typing", help: "Allow prefix/partial matching during live search.", source: "Normal setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "OperatorBasedDocumentSearch", aliases: [], title: "Operator-based document search", help: "Use DEVONthink’s operator/wildcard-aware search behavior for document searches.", source: "Advanced setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "SeeAlsoCurrentDatabase", aliases: [], title: "See Also: current database only", help: "Limit See Also & Classify suggestions to the current database.", source: "Normal setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "SeeAlsoTags", aliases: [], title: "See Also: match tags", help: "Use tags as part of See Also & Classify matching.", source: "Normal setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "EnableSearchFieldAutocompletion", aliases: [], title: "Search-field autocompletion", help: "Have DEVONthink complete toolbar search strings while typing when live/partial typing options are disabled.", source: "Official hidden setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "PersistentSortingOfSearchResults", aliases: [], title: "Remember search-results sorting", help: "Retain the last sorting method used for database search results.", source: "Official hidden setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "DontAutomaticallyEnableOperatorsOptionOfSearchInspector", aliases: ["DontAutomaticallyEnableOperatorsOptions"], title: "Do not auto-enable Operators & Wildcards", help: "After toolbar searches, do not automatically enable Operators & Wildcards in the Search inspector.", source: "Official hidden setting"),
+    .bool(category: "Search & Classification", domain: thinkDomain, key: "DontSetFindPboard", aliases: [], title: "Do not use shared Find pasteboard", help: "Keep DEVONthink search terms out of macOS’s shared Find pasteboard so other apps do not automatically inherit them.", source: "Official hidden setting"),
+    .bool(category: "Annotations & Metadata", domain: thinkDomain, key: "CreateAnnotationsInSameGroup", aliases: [], title: "Create annotations in same group", help: "Create annotation documents beside the source item instead of in the shared Annotations group.", source: "Normal setting"),
+    .bool(category: "Annotations & Metadata", domain: thinkDomain, key: "MoveAnnotationsAutomaticallyToTrash", aliases: [], title: "Move annotations automatically to Trash", help: "Automatically trash associated annotation documents when the source item is removed according to DEVONthink’s annotation rules.", source: "Normal setting"),
+    .bool(category: "Annotations & Metadata", domain: thinkDomain, key: "RenameAnnotationsAutomatically", aliases: [], title: "Rename annotations automatically", help: "Keep annotation document names synchronized with their source items.", source: "Normal setting"),
+    .bool(category: "Annotations & Metadata", domain: thinkDomain, key: "SortAnnotationsByType", aliases: [], title: "Sort annotations by type", help: "Sort annotations by annotation type instead of document order.", source: "Normal setting"),
+    .bool(category: "Annotations & Metadata", domain: thinkDomain, key: "Unify Date In Names", aliases: [], title: "Unify dates in names", help: "Use DEVONthink’s normalized date formatting when date-based names are generated.", source: "Advanced setting"),
+    .bool(category: "Feeds", domain: thinkDomain, key: "FeedNotifications", aliases: [], title: "Feed notifications", help: "Show notifications for newly received feed articles.", source: "Normal feed setting"),
+    .bool(category: "Feeds", domain: thinkDomain, key: "FeedReadability", aliases: [], title: "Use Reader/Readability for feeds", help: "Process feed article web content with DEVONthink’s readability extraction where supported.", source: "Normal feed setting"),
+    .bool(category: "Feeds", domain: thinkDomain, key: "RemoveArticlesImmediately", aliases: [], title: "Remove expired feed articles immediately", help: "Remove feed articles immediately when the configured feed-retention rules expire them.", source: "Normal feed setting"),
+    .bool(category: "Feeds", domain: thinkDomain, key: "RemoveUnreadArticles", aliases: [], title: "Allow removal of unread feed articles", help: "Permit feed-retention cleanup to remove unread articles as well.", source: "Normal feed setting"),
+    .bool(category: "Feeds", domain: thinkDomain, key: "SkipIdenticallyNamedArticles", aliases: [], title: "Skip identically named feed articles", help: "Avoid adding a new feed article when an article with the same name is already present.", source: "Normal feed setting"),
+    .bool(category: "Feeds", domain: thinkDomain, key: "UseFeedCategories", aliases: [], title: "Use feed categories", help: "Use categories supplied by feeds during DEVONthink feed processing.", source: "Normal feed setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "AutomaticBookmarkPreview", aliases: [], title: "Automatically load bookmark previews", help: "Automatically load bookmark/web-page previews when a bookmark is selected.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "BlockAdvertisement", aliases: [], title: "Block advertisements", help: "Use DEVONthink’s web-content advertisement blocking.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "BlockAllPopUps", aliases: [], title: "Block pop-up windows", help: "Block web content from opening pop-up windows.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "BlockResizingOfWindows", aliases: [], title: "Block web-window resizing", help: "Prevent web content from resizing browser/view windows.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "BrowseInPlace", aliases: [], title: "Browse links in place", help: "Open navigated web links in the current DEVONthink web view when applicable.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "DeleteCookiesOnQuit", aliases: [], title: "Delete cookies on quit", help: "Delete DEVONthink web cookies when the application quits.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "DisablePreprocessedClipping", aliases: [], title: "Disable preprocessed web clipping", help: "Send clipped web-page content without DEVONthink’s extra preprocessing stage.", source: "Official hidden setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "OpenLinksExternally", aliases: [], title: "Open clicked links externally", help: "Open clicked web/document links in the system browser or associated external application.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "OpenLinksInForeground", aliases: [], title: "Open external links in foreground", help: "Bring the external browser/application to the foreground when DEVONthink opens a link there.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "Rename to Web Page Title", aliases: [], title: "Rename clips to web-page title", help: "Use the detected page title when naming supported web clips/bookmarks.", source: "Normal setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebAutomaticDashSubstitutionEnabled", aliases: [], title: "Web editor: smart dashes", help: "Enable automatic dash substitution in DEVONthink’s web-based editor.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebAutomaticLinkDetectionEnabled", aliases: [], title: "Web editor: automatic link detection", help: "Automatically detect links in DEVONthink’s web-based editor.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebAutomaticQuoteSubstitutionEnabled", aliases: [], title: "Web editor: smart quotes", help: "Enable automatic smart-quote substitution in DEVONthink’s web-based editor.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebAutomaticTextReplacementEnabled", aliases: [], title: "Web editor: text replacement", help: "Enable macOS text replacements in DEVONthink’s web-based editor.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebGrammarCheckingEnabled", aliases: [], title: "Web editor: grammar checking", help: "Enable grammar checking in DEVONthink’s web-based editor.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebIconDatabaseEnabled", aliases: [], title: "Web icon database", help: "Allow WebKit to maintain/use its website-icon database.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitAllowAnimatedImageLoopingPreferenceKey", aliases: [], title: "Allow animated images to loop", help: "Allow animated web images to repeat/loop.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitAllowAnimatedImagesPreferenceKey", aliases: [], title: "Allow animated images", help: "Allow animated images to play in DEVONthink’s WebKit views.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitDisplayImagesKey", aliases: [], title: "Display web images", help: "Load and display images in DEVONthink’s WebKit views.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitFullScreenEnabled", aliases: [], title: "Allow web full-screen mode", help: "Allow web content to request/use full-screen presentation where supported.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitJavaScriptCanOpenWindowsAutomatically", aliases: [], title: "Allow JavaScript to open windows automatically", help: "Allow JavaScript in web content to open new windows without a direct user action.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitJavaScriptEnabled", aliases: [], title: "Enable JavaScript", help: "Run JavaScript in DEVONthink’s WebKit views.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitMediaPlaybackRequiresUserGesture", aliases: [], title: "Require gesture for media playback", help: "Require a user action before web audio/video can begin playback.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitShouldPrintBackgroundsPreferenceKey", aliases: [], title: "Print web backgrounds", help: "Include web-page background graphics/colors when printing.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitUsesPageCachePreferenceKey", aliases: [], title: "Use WebKit page cache", help: "Allow DEVONthink’s WebKit views to retain pages in the in-memory page cache.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebKitZoomsTextOnly", aliases: [], title: "Web zoom changes text only", help: "Make web zoom affect text size instead of scaling the whole rendered page.", source: "WebKit setting"),
+    .bool(category: "Web, Browser & Clipping", domain: thinkDomain, key: "WebSmartInsertDeleteEnabled", aliases: [], title: "Web smart insert/delete", help: "Use WebKit smart insertion/deletion behavior while editing web content.", source: "WebKit setting"),
+    .bool(category: "Sync & Server", domain: thinkDomain, key: "DTSyncConfig.duplicateDocumentsAfterConflicts", aliases: [], title: "Duplicate documents after sync conflicts", help: "Keep conflicting document versions as separate documents instead of silently choosing one.", source: "Normal sync setting"),
+    .bool(category: "Sync & Server", domain: thinkDomain, key: "DTSyncConfig.synconquit", aliases: [], title: "Synchronize on quit", help: "Run synchronization when DEVONthink quits.", source: "Normal sync setting"),
+    .bool(category: "Sync & Server", domain: thinkDomain, key: "WebServerAllowInsecureConnection", aliases: [], title: "Allow insecure HTTP connection", help: "Permit DEVONthink Server to offer an unencrypted HTTP connection on its secondary port.", source: "Normal server setting"),
+    .bool(category: "Sync & Server", domain: thinkDomain, key: "WebServerStartup", aliases: [], title: "Start web server automatically", help: "Start DEVONthink’s built-in web server automatically with the application.", source: "Normal server setting"),
+    .bool(category: "Sync & Server", domain: thinkDomain, key: "SyncDebugLog", aliases: [], title: "Sync debug logging", help: "Enable additional synchronization logging intended for troubleshooting.", source: "Official hidden setting"),
+    .bool(category: "Sync & Server", domain: thinkDomain, key: "ServerDebugLog", aliases: [], title: "Web-server debug logging", help: "Enable additional DEVONthink web-server logging intended for troubleshooting.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "DatePlaceholdersWithoutLeadingZeros", aliases: [], title: "Date placeholders without leading zeros", help: "Generate date/time placeholders without leading zeroes, e.g. 9 instead of 09.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "DisableActivityWindow", aliases: [], title: "Disable automatic Activity-window showing/hiding", help: "Stop DEVONthink automatically presenting or hiding the Activity window.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "DisableBadgeLabel", aliases: [], title: "Disable Dock badge label", help: "Disable the badge label on DEVONthink’s Dock icon.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "DisableHighlightColorMapping", aliases: [], title: "Disable highlight color mapping", help: "Use the same highlight colors in light and dark appearance instead of mapping colors between appearances.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "DisableRelativeDates", aliases: [], title: "Disable relative dates", help: "Always show absolute dates instead of labels such as Today.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "DisableTagAutocompletion", aliases: [], title: "Disable tag autocompletion", help: "Do not show tag-suggestion popups while entering tags.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "EnableFSEventLogging", aliases: [], title: "Filesystem-event debug logging", help: "Log filesystem events for troubleshooting. This is normally only useful for support/debugging.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "EnableEvernoteRTFDImport", aliases: [], title: "Import Evernote notes as rich text", help: "Import supported Evernote notebook notes as rich-text/RTFD documents.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "MonospacedSidebarFont", aliases: [], title: "Monospaced sidebar font", help: "Use a monospaced system font in main-window sidebars.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "MonospacedViewFont", aliases: [], title: "Monospaced item-list font", help: "Use a monospaced system font in main-window item lists.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "ShowAdditionalInfoInPathBar", aliases: [], title: "Show additional path-bar information", help: "Show additional details about the selected item in DEVONthink’s information/path bar.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "WindowToolbarStyleExpanded", aliases: [], title: "Expanded toolbar style", help: "Use the expanded toolbar/title-bar style instead of the unified toolbar style where macOS still supports it.", source: "Official hidden setting"),
+    .bool(category: "Hidden Appearance & Behavior", domain: thinkDomain, key: "WindowToolbarTitleHidden", aliases: [], title: "Hide main-window title", help: "Hide the title in DEVONthink main windows when compatible with the chosen toolbar style.", source: "Official hidden setting"),
+    .bool(category: "AI & Chat", domain: thinkDomain, key: "ChatAssistantLoadsImagesAutomatically", aliases: [], title: "Load remote images automatically in AI chat", help: "Allow DEVONthink’s chat assistant to load remote images while processing web/content responses. DEVONthink documents this as disabled by default for security/privacy reasons.", source: "DEVONthink 4.4 bundled Help"),
+    .bool(category: "AI & Chat", domain: thinkDomain, key: "ChatAssistantMCPToolsEnabled", aliases: [], title: "Allow DEVONthink MCP tools in AI chat", help: "Give the chat assistant access to DEVONthink’s own MCP tools when the selected model supports tool calls.", source: "DEVONthink 4.4 bundled Help"),
+    .bool(category: "AI & Chat", domain: thinkDomain, key: "ChatAssistantSupportsChanges", aliases: [], title: "Allow AI property & content changes", help: "Allow the chat assistant to change database content or properties, such as adding tags or creating documents.", source: "DEVONthink 4.4 bundled Help"),
+    .bool(category: "AI & Chat", domain: thinkDomain, key: "ChatAssistantSupportsDownloading", aliases: [], title: "Allow AI to download web pages", help: "Allow the chat assistant to download web-page content for examination during a query. DEVONthink warns that this may be considered insecure.", source: "DEVONthink 4.4 bundled Help"),
+    .bool(category: "AI & Chat", domain: thinkDomain, key: "ChatAssistantSupportsScreenshots", aliases: [], title: "Allow AI screenshots of DEVONthink window", help: "Allow compatible AI models to capture and examine a screenshot of the DEVONthink window for a query.", source: "DEVONthink 4.4 bundled Help"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "TextRulerVisiblePref", aliases: [], title: "Show text ruler", help: "Show the ruler while editing compatible rich-text content.", source: "Stored DEVONthink/AppKit editor preference"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "NSTextShowsInvisibles", aliases: [], title: "Show invisible text characters", help: "Show invisible/control characters supported by the macOS text system while editing.", source: "Stored macOS text-system preference used by DEVONthink"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "NSTextWrapsLines", aliases: [], title: "Wrap text lines", help: "Wrap long text lines to the available editor width instead of requiring horizontal continuation.", source: "Stored macOS text-system preference used by DEVONthink"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "SummariesUseBlockQuote", aliases: [], title: "Use Markdown blockquotes in annotation summaries", help: "Use Markdown blockquotes instead of highlights when DEVONthink creates Markdown summary documents via Summarize Annotations.", source: "DEVONthink 4.4 bundled Help"),
+    .bool(category: "Markdown, Text & Links", domain: thinkDomain, key: "OpenCreatedLinks", aliases: [], title: "Open newly created WikiLink documents in separate windows", help: "Open documents created through unresolved WikiLinks in their own document windows.", source: "DEVONthink 4.4 bundled Help"),
+    .bool(category: "Files, Import & Indexing", domain: thinkDomain, key: "RawOPMLImport", aliases: [], title: "Import OPML as raw/native files", help: "Import .opml files as native files instead of parsing them into groups, feeds, and related structures.", source: "Official hidden setting"),
+    .intRange(category: "Hidden Appearance & Behavior", domain: "com.devon-technologies.think", key: "AVSkippingInterval", title: "Media Shift+Arrow skip interval", help: "Seconds skipped forward/backward when Shift+Left/Right is used in audio/video files.", source: "Official hidden setting", min: 1, max: 3600, step: 1, unit: "seconds"),
+    .intRange(category: "Hidden Appearance & Behavior", domain: "com.devon-technologies.think", key: "BatesNumberDigits", title: "Bates-number digit count", help: "Number of digits used when DEVONthink generates Bates numbers.", source: "Official hidden setting", min: 1, max: 30, step: 1, unit: "digits"),
+    .intRange(category: "Hidden Appearance & Behavior", domain: "com.devon-technologies.think", key: "CounterDigits", title: "Counter-placeholder digit count", help: "Number of digits used by DEVONthink’s Counter placeholder.", source: "Official hidden setting", min: 1, max: 30, step: 1, unit: "digits"),
+    .intRange(category: "Hidden Appearance & Behavior", domain: "com.devon-technologies.think", key: "MaximumNumberOfRecentDestinations", title: "Recent destinations limit", help: "Maximum number of recent destinations shown in Move To and related menus.", source: "Official hidden setting", min: 0, max: 100, step: 1, unit: "items"),
+    .intRange(category: "Hidden Appearance & Behavior", domain: "com.devon-technologies.think", key: "MaximumNumberOfRecentSearches", title: "Recent searches limit", help: "Maximum number of recent searches retained for the toolbar search field/Search inspector.", source: "Official hidden setting", min: 0, max: 100, step: 1, unit: "items"),
+    .extensions(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "AdditionalPlainTextExtensions", title: "Additional plain-text extensions", help: "Treat additional filename extensions as plain text. Choose sample files and the editor extracts their extensions; no raw extension syntax is required.", source: "Official hidden setting"),
+    .extensions(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "AdditionalXMLExtensions", title: "Additional XML extensions", help: "Treat additional filename extensions as XML. Choose sample files and the editor extracts their extensions.", source: "Official hidden setting"),
+    .path(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "DatabaseDirectory", title: "Default databases folder", help: "Folder DEVONthink uses as its default location for databases.", source: "Normal setting"),
+    .path(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "ImportDirectory", title: "Default import folder", help: "Default Finder folder shown/used for manual imports.", source: "Normal setting"),
+    .path(category: "Sync & Server", domain: "com.devon-technologies.think", key: "NewLocalSyncStoreDirectory", title: "Default local sync-store folder", help: "Default folder used when creating a new local DEVONthink sync store.", source: "Normal sync setting"),
+    .text(category: "General & Interface", domain: "com.devon-technologies.think", key: "DocumentAuthor", title: "Default document author", help: "Default author name written into supported newly created documents/metadata.", source: "Normal setting"),
+    .choice(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "UseFormViews", title: "Default sheet display", help: "Choose the default view used when displaying sheets. Form View is available where supported by the installed DEVONthink edition.", source: "Normal setting", choices: [Choice(label: "Table View", value: .bool(false)), Choice(label: "Form View", value: .bool(true))]),
+    .choice(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "UseFormViewsForPDFConversion", title: "Paginated sheet-to-PDF view", help: "Choose which sheet view DEVONthink uses when converting a sheet to a paginated PDF.", source: "Normal setting", choices: [Choice(label: "Table View", value: .bool(false)), Choice(label: "Form View", value: .bool(true))]),
+    .text(category: "Markdown, Text & Links", domain: "com.devon-technologies.think", key: "ImageDestination", title: "Markdown image destination group", help: "Name of the group DEVONthink creates/uses for images pasted or dropped into Markdown documents when image importing is enabled.", source: "Normal setting"),
+    .font(category: "General & Interface", domain: "com.devon-technologies.think", key: "TextFontName", title: "Plain-text font", help: "Font used for plain-text document editing/display.", source: "Normal setting"),
+    .font(category: "General & Interface", domain: "com.devon-technologies.think", key: "RichFontName", title: "Rich-text and note font", help: "Default font used for rich-text documents and notes.", source: "Normal setting"),
+    .font(category: "Markdown, Text & Links", domain: "com.devon-technologies.think", key: "MarkdownFontName", title: "Markdown source font", help: "Font used for Markdown source editing.", source: "Normal setting"),
+    .font(category: "PDF, Images, Audio & Video", domain: "com.devon-technologies.think", key: "FullScreenFontName", title: "Full-screen text font", help: "Font used by supported full-screen text/document display.", source: "Normal setting"),
+    .font(category: "Web, Browser & Clipping", domain: "com.devon-technologies.think", key: "WebKitStandardFont", title: "Web standard font", help: "Standard proportional font used by DEVONthink’s WebKit renderer.", source: "WebKit setting"),
+    .font(category: "Web, Browser & Clipping", domain: "com.devon-technologies.think", key: "WebKitFixedFont", title: "Web fixed-width font", help: "Fixed-width font used by DEVONthink’s WebKit renderer.", source: "WebKit setting"),
+    .doubleRange(category: "General & Interface", domain: "com.devon-technologies.think", key: "TextPointSize", title: "Plain-text size", help: "Default plain-text font size.", source: "Normal setting", min: 6.0, max: 72.0, step: 1.0, unit: "pt"),
+    .doubleRange(category: "General & Interface", domain: "com.devon-technologies.think", key: "RichPointSize", title: "Rich-text size", help: "Default rich-text/note font size.", source: "Normal setting", min: 6.0, max: 72.0, step: 1.0, unit: "pt"),
+    .doubleRange(category: "Markdown, Text & Links", domain: "com.devon-technologies.think", key: "MarkdownPointSize", title: "Markdown source size", help: "Default Markdown source-editor font size.", source: "Normal setting", min: 6.0, max: 72.0, step: 1.0, unit: "pt"),
+    .doubleRange(category: "General & Interface", domain: "com.devon-technologies.think", key: "SideBarPointSize", title: "Sidebar text size", help: "Text size used in DEVONthink sidebars. DEVONthink documents 10–24 pt.", source: "Normal setting", min: 10.0, max: 24.0, step: 1.0, unit: "pt"),
+    .doubleRange(category: "General & Interface", domain: "com.devon-technologies.think", key: "ViewPointSize", title: "Item-list text size", help: "Text size used in DEVONthink item/list views. DEVONthink documents 10–24 pt.", source: "Normal setting", min: 10.0, max: 24.0, step: 1.0, unit: "pt"),
+    .doubleRange(category: "PDF, Images, Audio & Video", domain: "com.devon-technologies.think", key: "FullScreenPointSize", title: "Full-screen text size", help: "Text size used by supported full-screen text/document display.", source: "Normal setting", min: 6.0, max: 72.0, step: 1.0, unit: "pt"),
+    .intRange(category: "General & Interface", domain: "com.devon-technologies.think", key: "TextMargin", title: "Text margin", help: "Margin used around plain-text editing/display content.", source: "Normal setting", min: 0, max: 200, step: 1, unit: "pt"),
+    .choice(category: "PDF, Images, Audio & Video", domain: "com.devon-technologies.think", key: "PDFDisplayMode", title: "PDF display mode", help: "Choose the PDFKit page layout used for normal PDF viewing.", source: "Normal setting", choices: [Choice(label: "Single Page", value: .int(0)), Choice(label: "Single Page Continuous", value: .int(1)), Choice(label: "Two Pages", value: .int(2)), Choice(label: "Two Pages Continuous", value: .int(3))]),
+    .choice(category: "PDF, Images, Audio & Video", domain: "com.devon-technologies.think", key: "FullScreenPDFDisplayMode", title: "Full-screen PDF display mode", help: "Choose the PDFKit page layout used for full-screen PDF viewing.", source: "Normal setting", choices: [Choice(label: "Single Page", value: .int(0)), Choice(label: "Single Page Continuous", value: .int(1)), Choice(label: "Two Pages", value: .int(2)), Choice(label: "Two Pages Continuous", value: .int(3))]),
+    .choice(category: "PDF, Images, Audio & Video", domain: "com.devon-technologies.think", key: "HighlightColor", title: "Default PDF highlight color", help: "Default color index used for PDF/text highlighting. Labels are taken from DEVONthink’s stored highlight descriptions.", source: "Normal setting", choices: [Choice(label: "Red", value: .int(0)), Choice(label: "Green", value: .int(1)), Choice(label: "Blue", value: .int(2)), Choice(label: "Yellow", value: .int(3)), Choice(label: "Orange", value: .int(4)), Choice(label: "Purple", value: .int(5)), Choice(label: "Magenta", value: .int(6))]),
+    .choice(category: "Sync & Server", domain: "com.devon-technologies.think", key: "DTSyncConfig.schedule", title: "Automatic sync interval", help: "How often DEVONthink automatically starts synchronization. Values are stored as seconds.", source: "Normal sync setting", choices: [Choice(label: "Manually", value: .int(0)), Choice(label: "Every minute", value: .int(60)), Choice(label: "Every 5 minutes", value: .int(300)), Choice(label: "Every 15 minutes", value: .int(900)), Choice(label: "Every 30 minutes", value: .int(1800)), Choice(label: "Every hour", value: .int(3600)), Choice(label: "Every day", value: .int(86400)), Choice(label: "Every week", value: .int(604800))]),
+    .intRange(category: "Sync & Server", domain: "com.devon-technologies.think", key: "DTSyncConfig.maxConcurrentConnections", title: "Maximum sync connections", help: "Maximum number of concurrent synchronization connections DEVONthink may use.", source: "Advanced sync setting", min: 1, max: 128, step: 1, unit: "connections"),
+    .intRange(category: "Sync & Server", domain: "com.devon-technologies.think", key: "WebServerSession", title: "Web-server session expiration", help: "How long an authenticated DEVONthink web-server session can remain valid/inactive before expiration.", source: "Normal server setting", min: 60, max: 86400, step: 60, unit: "seconds"),
+    .intRange(category: "Sync & Server", domain: "com.devon-technologies.think", key: "WebServerPort", title: "Secure web-server port", help: "Custom HTTPS/server port. 0 leaves DEVONthink’s normal/default port selection in control.", source: "Normal server setting", min: 0, max: 65535, step: 1, unit: "port"),
+    .intRange(category: "Sync & Server", domain: "com.devon-technologies.think", key: "WebServerSecondaryPort", title: "Insecure HTTP port", help: "Port used for optional insecure HTTP access. 0 leaves DEVONthink’s normal/default selection in control.", source: "Normal server setting", min: 0, max: 65535, step: 1, unit: "port"),
+    .text(category: "Sync & Server", domain: "com.devon-technologies.think", key: "WebServerName3", title: "DEVONthink web-server name", help: "Human-readable name advertised/used by DEVONthink Server.", source: "Normal server setting"),
+    .text(category: "Sync & Server", domain: "com.devon-technologies.think", key: "WebServerDomain", title: "Bonjour domain", help: "Bonjour domain advertised by DEVONthink Server. Leave empty for the normal local-network default unless a specific Bonjour domain is required.", source: "Normal server setting"),
+    .intRange(category: "Web, Browser & Clipping", domain: "com.devon-technologies.think", key: "WebKitDefaultFontSize", title: "Web default font size", help: "Default proportional-font size used by DEVONthink’s WebKit renderer.", source: "WebKit setting", min: 6, max: 72, step: 1, unit: "pt"),
+    .intRange(category: "Web, Browser & Clipping", domain: "com.devon-technologies.think", key: "WebKitDefaultFixedFontSize", title: "Web fixed-font size", help: "Default fixed-width font size used by DEVONthink’s WebKit renderer.", source: "WebKit setting", min: 6, max: 72, step: 1, unit: "pt"),
+    .encoding(category: "Web, Browser & Clipping", domain: "com.devon-technologies.think", key: "WebKitDefaultTextEncodingName", title: "Web default text encoding", help: "Default character encoding used by DEVONthink’s WebKit renderer when content does not declare one. The picker is generated from all text encodings macOS exposes.", source: "WebKit setting"),
+    .encoding(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "MailImport.FallbackIANACharSetName", title: "Email fallback text encoding", help: "Fallback character encoding used when imported email text does not declare a usable encoding. The picker is generated from all text encodings macOS exposes.", source: "Normal setting"),
+    .nsEncoding(category: "Files, Import & Indexing", domain: "com.devon-technologies.think", key: "EncodingPref", title: "Imported plain-text encoding", help: "Default encoding used for imported plain-text documents. Includes Automatic plus every NSString text encoding exposed by macOS.", source: "Normal setting"),
+    .choice(category: "Web, Browser & Clipping", domain: "com.devon-technologies.think", key: "WebKitCacheModelPreferenceKey", title: "WebKit cache model", help: "WebKit cache profile controlling how aggressively web resources/pages are cached.", source: "WebKit setting", choices: [Choice(label: "Document Viewer — minimal cache", value: .int(0)), Choice(label: "Web Browser — normal cache", value: .int(1)), Choice(label: "Primary Web Browser — largest cache", value: .int(2))]),
+    .intRange(category: "OCR & Recognition", domain: "com.devon-technologies.DTOCRHelper", key: "OutputDPI", title: "OCR helper output DPI", help: "Output resolution used by DEVONthink’s OCR helper. 0 means automatic/as source; otherwise choose a concrete DPI.", source: "OCR helper setting", min: 0, max: 600, step: 1, unit: "dpi"),
+    .doubleRange(category: "AI & Chat", domain: "com.devon-technologies.think", key: "ChatAssistantFontSize", title: "AI chat text size", help: "Text size used by DEVONthink’s AI-directed elements such as the Chat inspector and Summarize popover. DEVONthink documents a supported range of 8–15 pt.", source: "DEVONthink 4.4 bundled Help", min: 8.0, max: 15.0, step: 1.0, unit: "pt"),
+    .choice(category: "Markdown, Text & Links", domain: "com.devon-technologies.think", key: "MarkdownImageLinkMode", title: "Markdown image reference type", help: "Choose how DEVONthink writes references for images pasted, dropped, or downloaded into Markdown documents. Automatic is DEVONthink’s documented default.", source: "DEVONthink 4.4 bundled Help", choices: [Choice(label: "Automatic", value: .int(0)), Choice(label: "Item Link", value: .int(1))]),
+
+    .bool(category: "General & Interface", domain: thinkDomain, key: "BeaconEnabled", title: "Send anonymized usage data", help: "Send anonymized usage data to DEVONtechnologies. This is DEVONthink's Usage setting.", source: "DEVONthink 4.4 bundled Help"),
+
+    .multilineText(category: "Markdown, Text & Links", domain: thinkDomain, key: "WikiTemplate3", title: "WikiLink new-document template", help: "Template text DEVONthink inserts when a WikiLink creates a new document. DEVONthink placeholders such as %date%, %time%, %weekday%, %newline%, %tab%, and %@ can be used here.", source: "DEVONthink 4.4 bundled Help"),
+    .text(category: "Markdown, Text & Links", domain: thinkDomain, key: "MarkdownStyleSheet", title: "Markdown global style sheet", help: "Default style sheet used to render Markdown. DEVONthink accepts a local file path, online URL, or item link. Reset this preference to use no custom global style sheet.", source: "DEVONthink 4.4 bundled Help + compiled preference key"),
+    .text(category: "Markdown, Text & Links", domain: thinkDomain, key: "MarkdownJavaScript", title: "Markdown global JavaScript", help: "Default JavaScript loaded with Markdown documents. DEVONthink supports local or online scripts. Reset this preference to use no global JavaScript.", source: "DEVONthink 4.4 bundled Help + compiled preference key"),
+    .color(category: "Markdown, Text & Links", domain: thinkDomain, key: "FullScreenBackgroundColor", title: "Full-screen document background color", help: "Background color used by DEVONthink's distraction-free document full-screen mode.", source: "DEVONthink 4.4 bundled Help + stored preference"),
+    .color(category: "Markdown, Text & Links", domain: thinkDomain, key: "FullScreenForegroundColor", title: "Full-screen document text color", help: "Text color used for plain-text content in DEVONthink's distraction-free document full-screen mode.", source: "DEVONthink 4.4 bundled Help + stored preference"),
+
+    .multilineText(category: "AI & Chat", domain: thinkDomain, key: "ChatCustomSummary", title: "Custom AI summary prompt", help: "Prompt used by DEVONthink's Custom summarization style. Use %@ where the information being summarized should be inserted.", source: "DEVONthink 4 bundled documentation + stored preference"),
+
+    .color(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "ImageBackground", title: "Image viewer background color", help: "Background color behind images in DEVONthink's viewer.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "PDFBackground", title: "PDF viewer background color", help: "Background color around PDF pages in DEVONthink's PDF viewer.", source: "DEVONthink 4.4 bundled Help + stored preference"),
+    .color(category: "PDF, Images, Audio & Video", domain: thinkDomain, key: "QuickTimeBackground", title: "Audio/video viewer background color", help: "Background color used by DEVONthink's audio/video player view.", source: "DEVONthink 4.4 bundled Help + stored preference"),
+
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightDescription-0", title: "Highlight 1 name", help: "Name shown for highlight color slot 1.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightDescription-1", title: "Highlight 2 name", help: "Name shown for highlight color slot 2.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightDescription-2", title: "Highlight 3 name", help: "Name shown for highlight color slot 3.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightDescription-3", title: "Highlight 4 name", help: "Name shown for highlight color slot 4.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightDescription-4", title: "Highlight 5 name", help: "Name shown for highlight color slot 5.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightDescription-5", title: "Highlight 6 name", help: "Name shown for highlight color slot 6.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightDescription-6", title: "Highlight 7 name", help: "Name shown for highlight color slot 7.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightColor-0", title: "Highlight 1 color", help: "Color used by highlight slot 1.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightColor-1", title: "Highlight 2 color", help: "Color used by highlight slot 2.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightColor-2", title: "Highlight 3 color", help: "Color used by highlight slot 3.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightColor-3", title: "Highlight 4 color", help: "Color used by highlight slot 4.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightColor-4", title: "Highlight 5 color", help: "Color used by highlight slot 5.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightColor-5", title: "Highlight 6 color", help: "Color used by highlight slot 6.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "HighlightColor-6", title: "Highlight 7 color", help: "Color used by highlight slot 7.", source: "DEVONthink compiled preference key + stored preference"),
+
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelDescription-1", title: "Label 1 name", help: "Custom name of DEVONthink label 1.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelDescription-2", title: "Label 2 name", help: "Custom name of DEVONthink label 2.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelDescription-3", title: "Label 3 name", help: "Custom name of DEVONthink label 3.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelDescription-4", title: "Label 4 name", help: "Custom name of DEVONthink label 4.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelDescription-5", title: "Label 5 name", help: "Custom name of DEVONthink label 5.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelDescription-6", title: "Label 6 name", help: "Custom name of DEVONthink label 6.", source: "DEVONthink compiled preference key + stored preference"),
+    .text(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelDescription-7", title: "Label 7 name", help: "Custom name of DEVONthink label 7.", source: "DEVONthink compiled preference key + stored preference"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelColor-1", title: "Label 1 color", help: "Custom color of DEVONthink label 1.", source: "DEVONthink compiled preference key"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelColor-2", title: "Label 2 color", help: "Custom color of DEVONthink label 2.", source: "DEVONthink compiled preference key"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelColor-3", title: "Label 3 color", help: "Custom color of DEVONthink label 3.", source: "DEVONthink compiled preference key"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelColor-4", title: "Label 4 color", help: "Custom color of DEVONthink label 4.", source: "DEVONthink compiled preference key"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelColor-5", title: "Label 5 color", help: "Custom color of DEVONthink label 5.", source: "DEVONthink compiled preference key"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelColor-6", title: "Label 6 color", help: "Custom color of DEVONthink label 6.", source: "DEVONthink compiled preference key"),
+    .color(category: "Appearance, Labels & Highlights", domain: thinkDomain, key: "LabelColor-7", title: "Label 7 color", help: "Custom color of DEVONthink label 7.", source: "DEVONthink compiled preference key"),
+].sorted {
+    if $0.category == $1.category { return $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    return $0.category.localizedCaseInsensitiveCompare($1.category) == .orderedAscending
+}
+
+func rawValue(domain: String, key: String) -> Any? {
+    CFPreferencesCopyAppValue(key as CFString, domain as CFString)
+}
+
+func currentRaw(_ spec: PreferenceSpec) -> Any? {
+    if let value = rawValue(domain: spec.domain, key: spec.key) { return value }
+    for alias in spec.aliases { if let value = rawValue(domain: spec.domain, key: alias) { return value } }
+    return nil
+}
+
+func boolValue(_ any: Any?) -> Bool? {
+    if let n = any as? NSNumber { return n.boolValue }
+    if let s = any as? String {
+        switch s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "true", "yes", "on": return true
+        case "0", "false", "no", "off": return false
+        default: return nil
+        }
+    }
+    return nil
+}
+
+func prefValue(from any: Any?) -> PrefValue? {
+    guard let any else { return nil }
+    if let n = any as? NSNumber {
+        let t = String(cString: n.objCType)
+        if t == "c" || t == "B" { return .bool(n.boolValue) }
+        if t == "f" || t == "d" { return .double(n.doubleValue) }
+        return .int(n.intValue)
+    }
+    if let s = any as? String { return .string(s) }
+    return nil
+}
+
+struct EncodingOption { let label: String; let iana: String }
+
+func availableEncodings() -> [EncodingOption] {
+    var result: [EncodingOption] = []
+    var seen = Set<String>()
+    var pointer = NSString.availableStringEncodings
+    while pointer.pointee != 0 {
+        let nsEncoding = pointer.pointee
+        let encoding = String.Encoding(rawValue: nsEncoding)
+        let cfEncoding = CFStringConvertNSStringEncodingToEncoding(nsEncoding)
+        if let ianaCF = CFStringConvertEncodingToIANACharSetName(cfEncoding) {
+            let iana = ianaCF as! String
+            let lower = iana.lowercased()
+            if !seen.contains(lower) {
+                seen.insert(lower)
+                result.append(EncodingOption(label: "\(String.localizedName(of: encoding)) — \(iana)", iana: iana))
+            }
+        }
+        pointer = pointer.advanced(by: 1)
+    }
+    return result.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+}
+
+func colorFromRaw(_ raw: Any?) -> NSColor? {
+    guard let dictionary = raw as? [String: Any] else {
+        if let dictionary = raw as? NSDictionary {
+            return colorFromRaw(dictionary as? [String: Any])
+        }
+        return nil
+    }
+    let alpha = (dictionary["alpha"] as? NSNumber)?.doubleValue ?? 1.0
+    let space = dictionary["colorSpace"] as? String ?? ""
+    if space.contains("White") {
+        guard let white = (dictionary["white"] as? NSNumber)?.doubleValue else { return nil }
+        return NSColor(calibratedWhite: white, alpha: alpha)
+    }
+    guard
+        let red = (dictionary["red"] as? NSNumber)?.doubleValue,
+        let green = (dictionary["green"] as? NSNumber)?.doubleValue,
+        let blue = (dictionary["blue"] as? NSNumber)?.doubleValue
+    else { return nil }
+    return NSColor(calibratedRed: red, green: green, blue: blue, alpha: alpha)
+}
+
+func colorPropertyList(_ color: NSColor) -> CFPropertyList? {
+    guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
+    let dictionary: NSDictionary = [
+        "alpha": NSNumber(value: rgb.alphaComponent),
+        "blue": NSNumber(value: rgb.blueComponent),
+        "colorSpace": "NSCalibratedRGBColorSpace",
+        "green": NSNumber(value: rgb.greenComponent),
+        "red": NSNumber(value: rgb.redComponent)
+    ]
+    return dictionary as CFPropertyList
+}
+
+func colorDisplay(_ raw: Any?) -> String {
+    guard let color = colorFromRaw(raw), let rgb = color.usingColorSpace(.deviceRGB) else { return "DEVONthink Default" }
+    let r = Int((rgb.redComponent * 255).rounded())
+    let g = Int((rgb.greenComponent * 255).rounded())
+    let b = Int((rgb.blueComponent * 255).rounded())
+    let a = Int((rgb.alphaComponent * 100).rounded())
+    return String(format: "#%02X%02X%02X  •  %d%% opacity", r, g, b, a)
+}
+
+func display(_ spec: PreferenceSpec) -> String {
+    guard let raw = currentRaw(spec) else { return "DEVONthink Default" }
+    switch spec.editor {
+    case .boolean:
+        guard let b = boolValue(raw) else { return "Stored value not recognized" }
+        return b ? "ON" : "OFF"
+    case .choice(let choices):
+        if let v = prefValue(from: raw), let c = choices.first(where: { $0.value == v }) { return c.label }
+        if let n = raw as? NSNumber {
+            let asInt = PrefValue.int(n.intValue)
+            if let c = choices.first(where: { $0.value == asInt }) { return c.label }
+        }
+        return "Legacy/other stored value"
+    case .intRange(_, _, _, let unit):
+        if let n = raw as? NSNumber { return "\(n.intValue) \(unit)" }
+        return String(describing: raw)
+    case .doubleRange(_, _, _, let unit):
+        if let n = raw as? NSNumber { return String(format: "%.0f %@", n.doubleValue, unit) }
+        return String(describing: raw)
+    case .font:
+        return (raw as? String) ?? "Stored value not recognized"
+    case .path:
+        return (raw as? String) ?? "Stored value not recognized"
+    case .text:
+        return (raw as? String) ?? "Stored value not recognized"
+    case .multilineText:
+        guard let value = raw as? String else { return "Stored value not recognized" }
+        let oneLine = value.replacingOccurrences(of: "\n", with: " ↵ ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return oneLine.count > 90 ? String(oneLine.prefix(87)) + "…" : oneLine
+    case .color:
+        return colorDisplay(raw)
+    case .extensions:
+        let s = (raw as? String) ?? ""
+        return s.isEmpty ? "None" : s
+    case .encoding:
+        guard let name = raw as? String else { return "Stored value not recognized" }
+        if let match = availableEncodings().first(where: { $0.iana.caseInsensitiveCompare(name) == .orderedSame }) { return match.label }
+        return name
+    case .nsEncoding:
+        guard let number = raw as? NSNumber else { return "Stored value not recognized" }
+        let stored = number.uint64Value
+        if stored == 4294967295 { return "Automatic" }
+        let encoding = String.Encoding(rawValue: UInt(stored))
+        let cfEncoding = CFStringConvertNSStringEncodingToEncoding(encoding.rawValue)
+        if let ianaCF = CFStringConvertEncodingToIANACharSetName(cfEncoding) {
+            return "\(String.localizedName(of: encoding)) — \(ianaCF)"
+        }
+        return String.localizedName(of: encoding)
+    }
+}
+
+func cfValue(_ value: PrefValue) -> CFPropertyList {
+    switch value {
+    case .bool(let v): return NSNumber(value: v) as CFPropertyList
+    case .int(let v): return NSNumber(value: v) as CFPropertyList
+    case .double(let v): return NSNumber(value: v) as CFPropertyList
+    case .string(let v): return v as CFString as CFPropertyList
+    }
+}
+
+func synchronize(_ domain: String) throws {
+    guard CFPreferencesAppSynchronize(domain as CFString) else {
+        throw NSError(domain: "DEVONthinkCuratedPreferences", code: 10, userInfo: [NSLocalizedDescriptionKey: "macOS could not synchronize the preference domain."])
+    }
+}
+
+func setPreference(_ spec: PreferenceSpec, _ value: PrefValue) throws {
+    CFPreferencesSetAppValue(spec.key as CFString, cfValue(value), spec.domain as CFString)
+    for alias in spec.aliases { CFPreferencesSetAppValue(alias as CFString, cfValue(value), spec.domain as CFString) }
+    try synchronize(spec.domain)
+}
+
+func setRawPreference(_ spec: PreferenceSpec, _ value: CFPropertyList) throws {
+    CFPreferencesSetAppValue(spec.key as CFString, value, spec.domain as CFString)
+    for alias in spec.aliases { CFPreferencesSetAppValue(alias as CFString, value, spec.domain as CFString) }
+    try synchronize(spec.domain)
+}
+
+func resetPreference(_ spec: PreferenceSpec) throws {
+    CFPreferencesSetAppValue(spec.key as CFString, nil, spec.domain as CFString)
+    for alias in spec.aliases { CFPreferencesSetAppValue(alias as CFString, nil, spec.domain as CFString) }
+    try synchronize(spec.domain)
+}
+
+func terminateDEVONthinkIfNeeded() throws {
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: appBundleID)
+    guard !running.isEmpty else { return }
+    for app in running { app.terminate() }
+    let deadline = Date().addingTimeInterval(6)
+    while Date() < deadline {
+        if NSRunningApplication.runningApplications(withBundleIdentifier: appBundleID).isEmpty { return }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+    throw NSError(domain: "DEVONthinkCuratedPreferences", code: 11, userInfo: [NSLocalizedDescriptionKey: "DEVONthink is still running. Quit DEVONthink completely and try again."])
+}
+
+final class Controller: NSObject, NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
+    final class SliderTarget: NSObject { let block: () -> Void; init(_ block: @escaping () -> Void) { self.block = block }; @objc func changed() { block() } }
+
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+    let search = NSSearchField(frame: .zero)
+    let category = NSPopUpButton(frame: .zero, pullsDown: false)
+    let table = NSTableView(frame: .zero)
+    let titleLabel = NSTextField(labelWithString: "")
+    let descriptionLabel = NSTextField(wrappingLabelWithString: "")
+    let metaLabel = NSTextField(wrappingLabelWithString: "")
+    let changeButton = NSButton(title: "Change…", target: nil, action: nil)
+    let resetButton = NSButton(title: "Reset to DEVONthink Default", target: nil, action: nil)
+    let launchButton = NSButton(title: "Launch DEVONthink", target: nil, action: nil)
+    var filtered: [PreferenceSpec] = []
+    var keyMonitor: Any?
+    var sliderTargets: [SliderTarget] = []
+
+    var selected: PreferenceSpec? {
+        let r = table.selectedRow
+        return (r >= 0 && r < filtered.count) ? filtered[r] : nil
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        buildUI(); refreshFilter(); window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); search.becomeFirstResponder()
+    }
+
+    func buildUI() {
+        window.title = "DEVONthink — Curated Preferences (\(allSpecs.count) defined controls)"
+        window.delegate = self
+        window.isReleasedWhenClosed = false
+        guard let content = window.contentView else { return }
+
+        search.translatesAutoresizingMaskIntoConstraints = false
+        search.placeholderString = "Search understood DEVONthink settings…"
+        search.delegate = self
+        search.sendsSearchStringImmediately = true
+
+        category.translatesAutoresizingMaskIntoConstraints = false
+        let cats = ["All Categories"] + Array(Set(allSpecs.map { $0.category })).sorted()
+        category.addItems(withTitles: cats)
+        category.target = self
+        category.action = #selector(filterChanged)
+
+        let nameCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name")); nameCol.title = "Setting"; nameCol.width = 610
+        let valueCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("value")); valueCol.title = "Current"; valueCol.width = 250
+        table.addTableColumn(nameCol); table.addTableColumn(valueCol)
+        table.delegate = self; table.dataSource = self; table.rowHeight = 28
+        table.target = self; table.doubleAction = #selector(changeSelected)
+
+        let scroll = NSScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false; scroll.documentView = table; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = false; scroll.borderType = .bezelBorder
+
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false; titleLabel.font = NSFont.boldSystemFont(ofSize: 16)
+        descriptionLabel.translatesAutoresizingMaskIntoConstraints = false; descriptionLabel.maximumNumberOfLines = 4
+        metaLabel.translatesAutoresizingMaskIntoConstraints = false; metaLabel.font = NSFont.systemFont(ofSize: 11); metaLabel.textColor = .secondaryLabelColor; metaLabel.maximumNumberOfLines = 3
+
+        for b in [changeButton, resetButton, launchButton] { b.translatesAutoresizingMaskIntoConstraints = false }
+        changeButton.target = self; changeButton.action = #selector(changeSelected)
+        resetButton.target = self; resetButton.action = #selector(resetSelected)
+        launchButton.target = self; launchButton.action = #selector(launchDEVONthink)
+
+        [search, category, scroll, titleLabel, descriptionLabel, metaLabel, changeButton, resetButton, launchButton].forEach { content.addSubview($0) }
+        NSLayoutConstraint.activate([
+            search.topAnchor.constraint(equalTo: content.topAnchor, constant: 14), search.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), search.widthAnchor.constraint(greaterThanOrEqualToConstant: 480),
+            category.centerYAnchor.constraint(equalTo: search.centerYAnchor), category.leadingAnchor.constraint(equalTo: search.trailingAnchor, constant: 12), category.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14),
+            scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10), scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 14), scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14), scroll.bottomAnchor.constraint(equalTo: titleLabel.topAnchor, constant: -12),
+            titleLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16), titleLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            descriptionLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6), descriptionLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor), descriptionLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            metaLabel.topAnchor.constraint(equalTo: descriptionLabel.bottomAnchor, constant: 6), metaLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor), metaLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            changeButton.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 10), changeButton.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor), changeButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -14),
+            resetButton.centerYAnchor.constraint(equalTo: changeButton.centerYAnchor), resetButton.leadingAnchor.constraint(equalTo: changeButton.trailingAnchor, constant: 10),
+            launchButton.centerYAnchor.constraint(equalTo: changeButton.centerYAnchor), launchButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -14)
+        ])
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self else { return e }
+            if e.keyCode == 53 { self.window.close(); return nil }
+            if (e.modifierFlags.contains(.command) && e.charactersIgnoringModifiers?.lowercased() == "f") { self.window.makeFirstResponder(self.search); return nil }
+            if e.keyCode == 36 || e.keyCode == 76 { if self.window.firstResponder !== self.search.currentEditor() { self.changeSelected(); return nil } }
+            return e
+        }
+    }
+
+    func controlTextDidChange(_ obj: Notification) { refreshFilter() }
+    @objc func filterChanged() { refreshFilter() }
+
+    func refreshFilter() {
+        let needle = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let chosen = category.titleOfSelectedItem ?? "All Categories"
+        filtered = allSpecs.filter { s in
+            let catOK = chosen == "All Categories" || s.category == chosen
+            let searchOK = needle.isEmpty || s.title.lowercased().contains(needle) || s.help.lowercased().contains(needle) || s.key.lowercased().contains(needle) || s.category.lowercased().contains(needle)
+            return catOK && searchOK
+        }
+        table.reloadData()
+        if !filtered.isEmpty { table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false) }
+        updateDetails()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard row >= 0 && row < filtered.count else { return nil }
+        let spec = filtered[row]
+        let id = NSUserInterfaceItemIdentifier(tableColumn?.identifier.rawValue ?? "cell")
+        let cell = tableView.makeView(withIdentifier: id, owner: self) as? NSTableCellView ?? NSTableCellView()
+        if cell.textField == nil {
+            let label = NSTextField(labelWithString: ""); label.translatesAutoresizingMaskIntoConstraints = false; label.lineBreakMode = .byTruncatingTail
+            cell.identifier = id; cell.textField = label; cell.addSubview(label)
+            NSLayoutConstraint.activate([label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6), label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -6), label.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
+        }
+        cell.textField?.stringValue = (tableColumn?.identifier.rawValue == "value") ? display(spec) : spec.title
+        return cell
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) { updateDetails() }
+
+    func updateDetails() {
+        guard let s = selected else { titleLabel.stringValue = ""; descriptionLabel.stringValue = ""; metaLabel.stringValue = ""; changeButton.isEnabled = false; resetButton.isEnabled = false; return }
+        titleLabel.stringValue = s.title
+        descriptionLabel.stringValue = s.help
+        metaLabel.stringValue = "Category: \(s.category)   •   Source: \(s.source)\nCurrent: \(display(s))   •   Technical key: \(s.key)"
+        changeButton.isEnabled = true; resetButton.isEnabled = currentRaw(s) != nil
+    }
+
+    func prepareWrite() -> Bool {
+        do { try terminateDEVONthinkIfNeeded(); return true } catch { showError(error.localizedDescription); return false }
+    }
+
+    @objc func resetSelected() {
+        guard let s = selected, prepareWrite() else { return }
+        do { try resetPreference(s); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    @objc func changeSelected() {
+        guard let s = selected else { return }
+        switch s.editor {
+        case .boolean: editBoolean(s)
+        case .choice(let c): editChoice(s, c)
+        case .intRange(let min, let max, let step, let unit): editInt(s, min, max, step, unit)
+        case .doubleRange(let min, let max, let step, let unit): editDouble(s, min, max, step, unit)
+        case .text: editText(s)
+        case .multilineText: editMultilineText(s)
+        case .color: editColor(s)
+        case .path: editPath(s)
+        case .font: editFont(s)
+        case .extensions: editExtensions(s)
+        case .encoding: editEncoding(s)
+        case .nsEncoding: editNSEncoding(s)
+        }
+    }
+
+    func popupAlert(_ s: PreferenceSpec, view: NSView, preferredHeight: CGFloat = 32) -> NSAlert {
+        let a = NSAlert(); a.messageText = s.title; a.informativeText = s.help; a.accessoryView = view; a.addButton(withTitle: "Save"); a.addButton(withTitle: "Cancel"); return a
+    }
+
+    func editBoolean(_ s: PreferenceSpec) {
+        let p = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28)); p.addItems(withTitles: ["ON", "OFF"])
+        if boolValue(currentRaw(s)) == false { p.selectItem(at: 1) }
+        let a = popupAlert(s, view: p); guard a.runModal() == .alertFirstButtonReturn, prepareWrite() else { return }
+        do { try setPreference(s, .bool(p.indexOfSelectedItem == 0)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editChoice(_ s: PreferenceSpec, _ choices: [Choice]) {
+        let p = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 420, height: 28)); p.addItems(withTitles: choices.map { $0.label })
+        if let v = prefValue(from: currentRaw(s)), let i = choices.firstIndex(where: { $0.value == v }) { p.selectItem(at: i) }
+        let a = popupAlert(s, view: p); guard a.runModal() == .alertFirstButtonReturn, p.indexOfSelectedItem >= 0, prepareWrite() else { return }
+        do { try setPreference(s, choices[p.indexOfSelectedItem].value); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func numberChooser(title: String, min: Double, max: Double, step: Double, current: Double, unit: String) -> (NSView, NSSlider, NSTextField) {
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 56))
+        let slider = NSSlider(frame: NSRect(x: 0, y: 26, width: 370, height: 24)); slider.minValue = min; slider.maxValue = max; slider.doubleValue = Swift.min(Swift.max(current, min), max); slider.numberOfTickMarks = 0; slider.allowsTickMarkValuesOnly = false
+        let field = NSTextField(labelWithString: ""); field.frame = NSRect(x: 380, y: 28, width: 78, height: 22); field.alignment = .right
+        let range = NSTextField(labelWithString: "Range: \(String(format: "%.0f", min))–\(String(format: "%.0f", max)) \(unit)   •   Step: \(String(format: "%.0f", step))"); range.frame = NSRect(x: 0, y: 0, width: 460, height: 20); range.textColor = .secondaryLabelColor
+        func update() { let snapped = round(slider.doubleValue / step) * step; slider.doubleValue = snapped; field.stringValue = "\(String(format: "%.0f", snapped)) \(unit)" }
+        let target = SliderTarget(update); sliderTargets.append(target); slider.target = target; slider.action = #selector(SliderTarget.changed)
+        box.addSubview(slider); box.addSubview(field); box.addSubview(range); update(); return (box, slider, field)
+    }
+
+    func editInt(_ s: PreferenceSpec, _ min: Int, _ max: Int, _ step: Int, _ unit: String) {
+        let cur = (currentRaw(s) as? NSNumber)?.doubleValue ?? Double(min)
+        let (v, slider, _) = numberChooser(title: s.title, min: Double(min), max: Double(max), step: Double(step), current: cur, unit: unit)
+        let a = popupAlert(s, view: v); guard a.runModal() == .alertFirstButtonReturn, prepareWrite() else { return }
+        let value = Int((slider.doubleValue / Double(step)).rounded() * Double(step))
+        do { try setPreference(s, .int(value)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editDouble(_ s: PreferenceSpec, _ min: Double, _ max: Double, _ step: Double, _ unit: String) {
+        let cur = (currentRaw(s) as? NSNumber)?.doubleValue ?? min
+        let (v, slider, _) = numberChooser(title: s.title, min: min, max: max, step: step, current: cur, unit: unit)
+        let a = popupAlert(s, view: v); guard a.runModal() == .alertFirstButtonReturn, prepareWrite() else { return }
+        let value = (slider.doubleValue / step).rounded() * step
+        do { try setPreference(s, .double(value)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editText(_ s: PreferenceSpec) {
+        let field = NSTextField(string: (currentRaw(s) as? String) ?? ""); field.frame = NSRect(x: 0, y: 0, width: 460, height: 24)
+        let a = popupAlert(s, view: field); a.window.initialFirstResponder = field
+        guard a.runModal() == .alertFirstButtonReturn, prepareWrite() else { return }
+        do { try setPreference(s, .string(field.stringValue)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editMultilineText(_ s: PreferenceSpec) {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 540, height: 220))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        let textView = NSTextView(frame: scroll.bounds)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = (currentRaw(s) as? String) ?? ""
+        scroll.documentView = textView
+        let a = popupAlert(s, view: scroll, preferredHeight: 220)
+        a.window.initialFirstResponder = textView
+        guard a.runModal() == .alertFirstButtonReturn, prepareWrite() else { return }
+        do { try setPreference(s, .string(textView.string)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editColor(_ s: PreferenceSpec) {
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 56))
+        let label = NSTextField(labelWithString: "Click the color well, choose the color, then Save.")
+        label.frame = NSRect(x: 0, y: 32, width: 330, height: 20)
+        label.textColor = .secondaryLabelColor
+        let well = NSColorWell(frame: NSRect(x: 340, y: 4, width: 72, height: 44))
+        well.color = colorFromRaw(currentRaw(s)) ?? .systemGray
+        box.addSubview(label)
+        box.addSubview(well)
+        let a = popupAlert(s, view: box, preferredHeight: 56)
+        guard a.runModal() == .alertFirstButtonReturn, prepareWrite() else { return }
+        guard let propertyList = colorPropertyList(well.color) else { showError("macOS could not convert the selected color into DEVONthink's stored color format."); return }
+        do { try setRawPreference(s, propertyList); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editPath(_ s: PreferenceSpec) {
+        let p = NSOpenPanel(); p.title = s.title; p.message = s.help; p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
+        if let path = currentRaw(s) as? String, !path.isEmpty { p.directoryURL = URL(fileURLWithPath: path) }
+        guard p.runModal() == .OK, let url = p.url, prepareWrite() else { return }
+        do { try setPreference(s, .string(url.path)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editFont(_ s: PreferenceSpec) {
+        let fonts = NSFontManager.shared.availableFontFamilies.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let p = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 28)); p.addItems(withTitles: fonts)
+        if let current = currentRaw(s) as? String {
+            if let exact = fonts.firstIndex(of: current) { p.selectItem(at: exact) }
+            else if let f = NSFont(name: current, size: 12), let i = fonts.firstIndex(of: f.familyName ?? "") { p.selectItem(at: i) }
+        }
+        let a = popupAlert(s, view: p); guard a.runModal() == .alertFirstButtonReturn, let name = p.titleOfSelectedItem, prepareWrite() else { return }
+        do { try setPreference(s, .string(name)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editNSEncoding(_ s: PreferenceSpec) {
+        var options: [(label: String, raw: UInt64)] = [("Automatic", 4294967295)]
+        var pointer = NSString.availableStringEncodings
+        var seen = Set<UInt64>()
+        while pointer.pointee != 0 {
+            let raw = UInt64(pointer.pointee)
+            if !seen.contains(raw) {
+                seen.insert(raw)
+                let encoding = String.Encoding(rawValue: pointer.pointee)
+                let cfEncoding = CFStringConvertNSStringEncodingToEncoding(encoding.rawValue)
+                let suffix: String
+                if let ianaCF = CFStringConvertEncodingToIANACharSetName(cfEncoding) { suffix = " — \(ianaCF)" } else { suffix = "" }
+                options.append(("\(String.localizedName(of: encoding))\(suffix)", raw))
+            }
+            pointer = pointer.advanced(by: 1)
+        }
+        let first = options.removeFirst()
+        options.sort { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+        options.insert(first, at: 0)
+        let p = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 520, height: 28)); p.addItems(withTitles: options.map { $0.label })
+        if let current = currentRaw(s) as? NSNumber, let index = options.firstIndex(where: { $0.raw == current.uint64Value }) { p.selectItem(at: index) }
+        let a = popupAlert(s, view: p); guard a.runModal() == .alertFirstButtonReturn, p.indexOfSelectedItem >= 0, prepareWrite() else { return }
+        do { try setPreference(s, .int(Int(options[p.indexOfSelectedItem].raw))); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editEncoding(_ s: PreferenceSpec) {
+        let encodings = availableEncodings()
+        guard !encodings.isEmpty else { showError("macOS did not report any available text encodings."); return }
+        let p = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 520, height: 28)); p.addItems(withTitles: encodings.map { $0.label })
+        if let current = currentRaw(s) as? String, let index = encodings.firstIndex(where: { $0.iana.caseInsensitiveCompare(current) == .orderedSame }) { p.selectItem(at: index) }
+        let a = popupAlert(s, view: p); guard a.runModal() == .alertFirstButtonReturn, p.indexOfSelectedItem >= 0, prepareWrite() else { return }
+        do { try setPreference(s, .string(encodings[p.indexOfSelectedItem].iana)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    func editExtensions(_ s: PreferenceSpec) {
+        let p = NSOpenPanel(); p.title = s.title; p.message = "Choose one or more example files. DEVONthink will store their filename extensions for this preference."; p.canChooseDirectories = false; p.canChooseFiles = true; p.allowsMultipleSelection = true
+        guard p.runModal() == .OK else { return }
+        let exts = Array(Set(p.urls.compactMap { u -> String? in let e=u.pathExtension.trimmingCharacters(in:.whitespacesAndNewlines); return e.isEmpty ? nil : e.lowercased() })).sorted()
+        guard !exts.isEmpty else { showError("None of the selected files had a filename extension."); return }
+        let value = exts.map { "." + $0 }.joined()
+        guard prepareWrite() else { return }
+        do { try setPreference(s, .string(value)); table.reloadData(); updateDetails() } catch { showError(error.localizedDescription) }
+    }
+
+    @objc func launchDEVONthink() { NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/Applications/DEVONthink.app"), configuration: NSWorkspace.OpenConfiguration(), completionHandler: nil) }
+    func showError(_ message: String) { let a=NSAlert(); a.alertStyle = .critical; a.messageText = "DEVONthink Preferences"; a.informativeText = message; a.runModal() }
+    func windowWillClose(_ notification: Notification) { NSApp.terminate(nil) }
+    deinit { if let keyMonitor { NSEvent.removeMonitor(keyMonitor) } }
+}
+
+let app = NSApplication.shared
+let controller = Controller()
+app.delegate = controller
+app.setActivationPolicy(.accessory)
+app.run()
+SWIFT
+
+xcrun swift "$TMP_SWIFT" 2>"$TMP_ERROR"
+STATUS=$?
+if [[ "$STATUS" -ne 0 ]]; then
+    ERROR_TEXT="$(cat "$TMP_ERROR")"
+    popup_error "DEVONthink curated preferences panel failed.
+
+$ERROR_TEXT"
+    printf '%s
+' "$ERROR_TEXT" >&2
+    exit "$STATUS"
+fi
+
+exit 0

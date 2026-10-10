@@ -1,0 +1,1 @@
+# devonthink-hidden-preferences-editor-zsh-file

@@ -1,0 +1,42 @@
+# DEVONthink Curated Preferences Editor (V4)
+
+A macOS GUI utility for browsing and changing selected **DEVONthink** preferences, including advanced and hidden settings. The script is written in **zsh** and launches a temporary **Swift/AppKit** interface.
+
+## Features
+
+- Categorized preferences with descriptions and source labels.
+- Controls for booleans, predefined choices, numeric ranges, text and multiline text.
+- Native pickers for folders, fonts, colors, encodings, and file extensions.
+- Settings covering interface, importing/indexing, Markdown, PDF, search, metadata, web content, sync/server, and AI/chat features.
+- Optional error popups, Terminal minimization, and DEVONthink relaunch behavior.
+
+## Requirements
+
+- macOS
+- DEVONthink installed (the script uses preference domain `com.devon-technologies.think`)
+- Swift toolchain accessible via `xcrun swift` (Apple Command Line Tools may be needed)
+
+## Run
+
+```sh
+chmod +x DEVONthink_Curated_Preferences_Editor.zsh
+./DEVONthink_Curated_Preferences_Editor.zsh
+```
+
+Edit these variables near the top of the script if needed:
+
+```sh
+DO_YOU_WANT_ERROR_POPUPS__YES_NO="YES"
+MINIMIZE_LAUNCHING_TERMINAL__YES_NO="YES"
+RELAUNCH_DEVONTHINK_AFTER_EDITOR_CLOSES__YES_NO="NO"
+```
+
+## Important
+
+**Back up DEVONthink preferences before editing.** Quit DEVONthink before changing settings where practical. Hidden or legacy keys may be version-specific, may have no effect, or may cause unexpected behavior. Changes to indexing, file coordination, syncing, and security-related settings deserve particular care.
+
+The script creates a temporary Swift source file, launches the preferences editor, and cleans up its temporary files on exit. It does not require Homebrew.
+
+## Disclaimer
+
+Unofficial community project, not affiliated with or endorsed by DEVONtechnologies. Provided as-is. Test changes carefully and keep a backup of your settings.
